@@ -43,6 +43,10 @@
 ;   * 8375 (partially) - *.home.arpa domains - (Just mentions of it are implmemented for testing purposes)
 ;       https://tools.ietf.org/html/rfc8375
 
+
+; https://www.rfc-editor.org/rfc/rfc3596.txt
+;   For the AAAA type (ipv6)
+
 ;
 ;- Compiler directives & imports
 ;{
@@ -197,6 +201,53 @@ Enumeration DNS_HEADER_RCODES
 	
 	; 6-15 Reserved for future use
 EndEnumeration
+
+; Taken from RFC 1035 p12 & RFC 3596 p3
+Enumeration DNS_RESOURCE_TYPE
+	#DNS_RESOURCE_TYPE_A = 1      ; a host address
+	#DNS_RESOURCE_TYPE_NS = 2	  ; an authoritative name server
+	#DNS_RESOURCE_TYPE_MD = 3	  ; a mail destination (Obsolete - use MX)
+	#DNS_RESOURCE_TYPE_MF = 4	  ; a mail forwarder (Obsolete - use MX)
+	#DNS_RESOURCE_TYPE_CNAME = 5  ; the canonical name For an alias
+	#DNS_RESOURCE_TYPE_SOA = 6	  ; marks the start of a zone of authority
+	#DNS_RESOURCE_TYPE_MB = 7	  ; a mailbox domain name (EXPERIMENTAL)
+	#DNS_RESOURCE_TYPE_MG = 8	  ; a mail group member (EXPERIMENTAL)
+	#DNS_RESOURCE_TYPE_MR = 9	  ; a mail rename domain name (EXPERIMENTAL)
+	#DNS_RESOURCE_TYPE_NULL = 10  ; a null RR (EXPERIMENTAL)
+	#DNS_RESOURCE_TYPE_WKS = 11	  ; a well known service description
+	#DNS_RESOURCE_TYPE_PTR = 12	  ; a domain name pointer
+	#DNS_RESOURCE_TYPE_HINFO = 13 ; host information
+	#DNS_RESOURCE_TYPE_MINFO = 14 ; mailbox Or mail List information
+	#DNS_RESOURCE_TYPE_MX = 15	  ; mail exchange
+	#DNS_RESOURCE_TYPE_TXT = 16	  ; text strings
+	
+	#DNS_RESOURCE_TYPE_AAAA = 28  ; a host address (ipv6) (RFC 3596 p3)
+EndEnumeration
+
+; QTYPE fields appear in the question part of a query.
+; QTYPES are a superset of TYPEs, hence all TYPEs are valid QTYPEs.
+; In addition, the following QTYPEs are defined:
+Enumeration DNS_RESOURCE_QTYPE
+	#DNS_RESOURCE_QTYPE_AXFR = 252  ; A request For a transfer of an entire zone
+	#DNS_RESOURCE_QTYPE_MAILB = 253	; A request For mailbox-related records (MB, MG Or MR)
+	#DNS_RESOURCE_QTYPE_MAILA = 254	; A request For mail agent RRs (Obsolete - see MX)
+	#DNS_RESOURCE_QTYPE_ALL = 255	; A request For all records
+EndEnumeration
+
+Enumeration DNS_RESOURCE_CLASS
+	#DNS_RESOURCE_CLASS_IN = 1 ; the Internet
+	#DNS_RESOURCE_CLASS_CS = 2 ; the CSNET class (Obsolete - used only For examples in some obsolete RFCs)
+	#DNS_RESOURCE_CLASS_CH = 3 ; the CHAOS class
+	#DNS_RESOURCE_CLASS_HS = 4 ; Hesiod [Dyer 87]
+EndEnumeration
+
+; QCLASS fields appear in the question section of a query.
+; QCLASS values are a superset of CLASS values; every CLASS is a valid QCLASS.
+; In addition to CLASS values, the following QCLASSes are defined:
+Enumeration DNS_RESOURCE_CLASS
+	#DNS_RESOURCE_QCLASS_ANY = 255 ; any class
+EndEnumeration
+
 
 ;
 ;-> Other constants
@@ -409,6 +460,53 @@ Procedure.i ParseDNSPacketSection(*QueryBuffer, *DNSPacket.DNSPacket, DataAmount
 	ProcedureReturn BufferOffset
 EndProcedure
 
+; Doesn't validate the flags set manually, don't be an idiot !
+Procedure EncodeDNSPacketHeaderFlags(*DNSPacket.DNSPacket)
+	; Using a separate variable MAY avoid the use of pointers in the final assembly.
+	Protected NewFlags.u = $0000
+	
+	If *DNSPacket
+		With *DNSPacket\Header
+			NewFlags = NewFlags | ((\Flags\QR & $0001) << 15 )
+			NewFlags = NewFlags | ((\Flags\Opcode & $000F) << 11 )
+			NewFlags = NewFlags | ((\Flags\AA & $0001) << 10 )
+			NewFlags = NewFlags | ((\Flags\TC & $0001) << 9 )
+			NewFlags = NewFlags | ((\Flags\RD & $0001) << 8 )
+			NewFlags = NewFlags | ((\Flags\RA & $0001) << 7 )
+			NewFlags = NewFlags | ((\Flags\Z & $0007) << 4 )
+			NewFlags = NewFlags | (\Flags\RCODE & $000F)
+			
+			; A call to EndianSwapU(...) could be avoided by changing the bit-wise operations.
+			; It would also lead to better performances.
+			\FlagsWord = EndianSwapU(NewFlags)
+		EndWith
+		
+		ProcedureReturn #True
+	EndIf
+	
+	ProcedureReturn #False
+EndProcedure
+
+Procedure DecodeDNSPacketHeaderFlags(*DNSPacket.DNSPacket)
+	If *DNSPacket
+		With *DNSPacket\Header
+			\Flags\QR = (\FlagsWord >> 15) & $0001
+			\Flags\Opcode = (\FlagsWord >> 11) & $000F
+			\Flags\AA = (\FlagsWord >> 10) & $0001
+			\Flags\TC = (\FlagsWord >> 9) & $0001
+			\Flags\RD = (\FlagsWord >> 8) & $0001
+			\Flags\RA = (\FlagsWord >> 7) & $0001
+			\Flags\Z = (\FlagsWord >> 4) & $0007
+			\Flags\RCODE = \FlagsWord  & $000F
+		EndWith
+		
+		ProcedureReturn #True
+	EndIf
+	
+	ProcedureReturn #False
+EndProcedure
+
+
 
 ; NOTE: The error code could be returned with a pointer, but it's easier to handle like this.
 Procedure.i ParseDNSPacket(*QueryBuffer, DataAmount.w, DecodeHeaderFlags.b = #True, AssembleNameStrings.b = #True)
@@ -447,14 +545,10 @@ Procedure.i ParseDNSPacket(*QueryBuffer, DataAmount.w, DecodeHeaderFlags.b = #Tr
 		\FlagsDecoded = DecodeHeaderFlags
 		
 		If DecodeHeaderFlags
-			\Flags\QR = (\FlagsWord >> 15) & $0001
-			\Flags\Opcode = (\FlagsWord >> 11) & $000F
-			\Flags\AA = (\FlagsWord >> 10) & $0001
-			\Flags\TC = (\FlagsWord >> 9) & $0001
-			\Flags\RD = (\FlagsWord >> 8) & $0001
-			\Flags\RA = (\FlagsWord >> 7) & $0001
-			\Flags\Z = (\FlagsWord >> 4) & $0007
-			\Flags\RCODE = \FlagsWord  & $000F
+			If Not DecodeDNSPacketHeaderFlags(*DNSPacket)
+				; FIXME: Return error
+				Debug "Flag decoding error !!!!"
+			EndIf
 		EndIf
 		
 		\QuestionCount = EndianSwapU(PeekU(*QueryBuffer + BufferOffset))
@@ -524,10 +618,99 @@ EndProcedure
 ; 	
 ; EndProcedure
 
+Procedure GetDNSBufferSizeForPacket(*DNSPacket.DNSPacket)
+	Protected PacketSize = #DNS_HEADER_SIZE
+	
+	If *DNSPacket
+		ForEach *DNSPacket\QuestionsRecords()
+			ForEach *DNSPacket\QuestionsRecords()\NameParts()
+				PacketSize = PacketSize + StringByteLength(*DNSPacket\QuestionsRecords()\NameParts(), #PB_Ascii) + 1
+			Next
+			
+			PacketSize = PacketSize + 4
+		Next
+		
+		ForEach *DNSPacket\AnswerRecords()
+			ForEach *DNSPacket\AnswerRecords()\NameParts()
+				PacketSize = PacketSize + StringByteLength(*DNSPacket\AnswerRecords()\NameParts(), #PB_Ascii) + 1
+			Next
+			
+			PacketSize = PacketSize + 4 + 4 + 2 + *DNSPacket\AnswerRecords()\RDataLength
+		Next
+		
+		ForEach *DNSPacket\AuthorityRecords()
+			ForEach *DNSPacket\AuthorityRecords()\NameParts()
+				PacketSize = PacketSize + StringByteLength(*DNSPacket\AuthorityRecords()\NameParts(), #PB_Ascii) + 1
+			Next
+			
+			PacketSize = PacketSize + 4 + 4 + 2 + *DNSPacket\AuthorityRecords()\RDataLength
+		Next
+		
+		ForEach *DNSPacket\AditionalRecords()
+			ForEach *DNSPacket\AditionalRecords()\NameParts()
+				PacketSize = PacketSize + StringByteLength(*DNSPacket\AditionalRecords()\NameParts(), #PB_Ascii) + 1
+			Next
+			
+			PacketSize = PacketSize + 4 + 4 + 2 + *DNSPacket\AditionalRecords()\RDataLength
+		Next
+		
+		ProcedureReturn PacketSize
+	EndIf
+	
+	ProcedureReturn 0
+EndProcedure
+
+Procedure.i ComposeDNSPacketBufferFromStructure(*DNSPacket.DNSPacket)
+	Protected *PacketBuffer, EstimatedPacketSize, BufferOffset.l = 0
+	
+	If *DNSPacket
+		EstimatedPacketSize = GetDNSBufferSizeForPacket(*DNSPacket)
+		
+		If EstimatedPacketSize > #DNS_PACKET_SIZE_MAX_UDP Or EstimatedPacketSize < #DNS_HEADER_SIZE
+			; TODO: Return an error
+			Debug "Buffer size invalid: "+EstimatedPacketSize
+			ProcedureReturn #Null
+		EndIf
+		
+		Debug "Estimated Packet Size: "+EstimatedPacketSize
+		
+		*PacketBuffer = AllocateMemory(EstimatedPacketSize)
+		
+		If Not *PacketBuffer
+			ProcedureReturn #DNS_ERROR_MALLOC_FAILURE
+		EndIf
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\TransactionID)
+		BufferOffset = BufferOffset + 2
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\FlagsWord)
+		BufferOffset = BufferOffset + 2
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\QuestionCount)
+		BufferOffset = BufferOffset + 2
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\AnswerCount)
+		BufferOffset = BufferOffset + 2
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\AuthorityCount)
+		BufferOffset = BufferOffset + 2
+		
+		PokeU(*PacketBuffer + BufferOffset, *DNSPacket\Header\AditionalRecordsCount)
+		BufferOffset = BufferOffset + 2
+		
+		; RR stuff
+		; FIXME: TODO !!!!!!
+		
+	EndIf
+	
+	ProcedureReturn *PacketBuffer
+EndProcedure
+
+
 ;!}
 
 ; IDE Options = PureBasic 5.70 LTS (Windows - x64)
-; CursorPosition = 398
-; FirstLine = 388
-; Folding = -
+; CursorPosition = 668
+; FirstLine = 636
+; Folding = --
 ; EnableXP

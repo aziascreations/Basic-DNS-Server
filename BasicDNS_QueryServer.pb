@@ -79,17 +79,29 @@ If CreateNetworkServer(0, #DNS_PORT, #PB_Network_UDP | #PB_Network_IPv4);, #SERV
 				*DNSPacket = ParseDNSPacket(*Buffer, DataAmount, #True, #True)
 				
 				If *DNSPacket > 0
+					; Discarding packets with RCodes
+					If *DNSPacket\Header\Flags\RCODE
+						Debug "A RCODE was given in the packet: "+Str(*DNSPacket\Header\Flags\RCODE)+" - It will be discarded !"
+						Continue
+					EndIf
+					
+					;Debug "0x"+RSet(Hex(*DNSPacket\Header\TransactionID), 4, "0")
+					Debug "0x"+RSet(Hex(*DNSPacket\Header\FlagsWord), 4, "0")
+					Debug *DNSPacket\Header\Flags\RD
 					
 					Select *DNSPacket\Header\Flags\Opcode
 						Case #DNS_OPCODE_QUERY
 							Debug "Packet received is a query."
 							
-							Define Indent.i = 0, FQDN$ = ""
+							Define Indent.i = 0
 							
 							;Define Result
 							
 							; TODO: Check if it is a response
 							;Result = ProcessQuery(*DNSPacket)
+							
+							
+							Debug *DNSPacket\QuestionsRecords()\Type
 							
 							Debug *DNSPacket\QuestionsRecords()\Name
 							
@@ -97,6 +109,37 @@ If CreateNetworkServer(0, #DNS_PORT, #PB_Network_UDP | #PB_Network_IPv4);, #SERV
 								Debug Space(Indent * 3) + "└" + *DNSPacket\QuestionsRecords()\NameParts()
 								Indent+1
 							Next
+							
+							
+							Define *DNSResponse.DNSPacket = AllocateStructure(DNSPacket)
+							
+							*DNSResponse\Header\TransactionID = EndianSwapU(*DNSPacket\Header\TransactionID)
+							*DNSResponse\Header\Flags\QR = 1 ; Response
+							*DNSResponse\Header\Flags\Opcode = #DNS_OPCODE_QUERY
+							*DNSResponse\Header\Flags\AA = 0 ; non-Authoritative answer
+							*DNSResponse\Header\Flags\TC = 0 ; Not truncated
+							*DNSResponse\Header\Flags\RD = 0 ; Doesn't matter if in a response
+							*DNSResponse\Header\Flags\RA = 0 ; Should signal that recursive queries are not available on the server.
+							*DNSResponse\Header\Flags\Z = 0	 ; Future use flags, must be set to 0
+							
+							;*DNSResponse\Header\Flags\RCODE = #DNS_RCODE_NO_ERROR
+							*DNSResponse\Header\Flags\RCODE = #DNS_RCODE_SERVER_FAILURE ; For quick testing
+							
+							EncodeDNSPacketHeaderFlags(*DNSResponse)
+							Debug "0b"+RSet(Bin(EndianSwapU(*DNSResponse\Header\FlagsWord)), 2*8, "0") 
+							
+							Define *ResponseBuffer
+							
+							*ResponseBuffer = ComposeDNSPacketBufferFromStructure(*DNSResponse)
+							
+							If *ResponseBuffer > 0
+								SendNetworkData(ClientID, *ResponseBuffer, MemorySize(*ResponseBuffer))
+								FreeMemory(*ResponseBuffer)
+							Else
+								Debug "ERROR !!!"
+							EndIf
+							
+							FreeStructure(*DNSResponse)
 							
 						Case #DNS_OPCODE_IQUERY
 							Debug "Packet received is an inverse query."
@@ -154,8 +197,8 @@ EndIf
 End 0
 
 ; IDE Options = PureBasic 5.70 LTS (Windows - x64)
-; CursorPosition = 88
-; FirstLine = 72
+; CursorPosition = 140
+; FirstLine = 110
 ; Folding = -
 ; EnableXP
 ; Executable = DNSTest.exe
